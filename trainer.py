@@ -322,8 +322,56 @@ class Trainer:
             if self.is_main:
                 logger.info(f"Using emotion dataset from {emotion_csv}")
 
-            train_loader, val_loader, class_counts = build_emotion_dataloaders(
-                cfg, device="cpu",
+            from emotion_dataset import (
+                load_emotion_csv, stratified_split, compute_class_counts,
+                EmotionMimiHuBERTDataset, emotion_collate_fn,
+            )
+
+            all_samples = load_emotion_csv(emotion_csv)
+            val_ratio = d_cfg.get("emotion_val_ratio", 0.1)
+            seed = t_cfg.get("seed", 42)
+            num_emotions = cfg["model"].get("num_emotions", 8)
+            train_samples, val_samples = stratified_split(all_samples, val_ratio, seed)
+            class_counts = compute_class_counts(train_samples, num_emotions)
+
+            train_ds = EmotionMimiHuBERTDataset(train_samples, cfg, "train", "cpu")
+            val_ds   = EmotionMimiHuBERTDataset(val_samples,   cfg, "val",   "cpu")
+
+            # ── DDP samplers (same pattern as JSONL path) ────────────────────
+            train_sampler = (
+                DistributedSampler(train_ds, num_replicas=self.world_size,
+                                   rank=self.global_rank, shuffle=True, drop_last=True)
+                if self.world_size > 1 else None
+            )
+            val_sampler = (
+                DistributedSampler(val_ds, num_replicas=self.world_size,
+                                   rank=self.global_rank, shuffle=False, drop_last=False)
+                if self.world_size > 1 else None
+            )
+
+            train_loader = DataLoader(
+                train_ds,
+                batch_size      = t_cfg["batch_size"],
+                sampler         = train_sampler,
+                shuffle         = (train_sampler is None),
+                num_workers     = num_workers,
+                collate_fn      = emotion_collate_fn,
+                pin_memory      = True,
+                drop_last       = True,
+                persistent_workers = True,
+                prefetch_factor = 4,
+            )
+            val_loader = DataLoader(
+                val_ds,
+                batch_size      = t_cfg["batch_size"],
+                sampler         = val_sampler,
+                shuffle         = False,
+                num_workers     = max(num_workers // 2, 2),
+                collate_fn      = emotion_collate_fn,
+                pin_memory      = True,
+                drop_last       = False,
+                persistent_workers = True,
+                prefetch_factor = 2,
             )
 
             # Set class weights for focal loss imbalance handling
@@ -333,7 +381,12 @@ class Trainer:
                 if self.is_main:
                     logger.info(f"  Class weights set (auto inverse-frequency)")
 
-            self.train_sampler = None   # emotion loader handles its own shuffle
+            self.train_sampler = train_sampler
+            if self.is_main:
+                logger.info(
+                    f"  Emotion loaders: {len(train_ds)} train / {len(val_ds)} val | "
+                    f"DDP={'yes' if train_sampler else 'no'}"
+                )
             return train_loader, val_loader
 
         # ── Fallback: original JSONL-based dataset ────────────────────────────
