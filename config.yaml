@@ -73,7 +73,7 @@ training:
     recon:      1.0
     ctc:        0.3
     prosody:    0.2
-    adv:        0.1
+    adv:        0.0     # Disabled: GAN loss causes instability at step 5000
     stat:       0.1
     smooth:     0.05
     # alignment requires forced-alignment phone labels in the manifest.
@@ -84,8 +84,8 @@ training:
     emotion:    0.5
 
   # --- Discriminator ---
-  disc_lr: 2.0e-4
-  disc_start_step: 5000
+  disc_lr: 2.0e-5
+  disc_start_step: 1000000
   disc_hidden: 512
   disc_layers: 4
 
